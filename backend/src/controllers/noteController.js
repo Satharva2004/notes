@@ -2,6 +2,7 @@ import { Note } from "../models/noteModel.js";
 import { env } from "../config/env.js";
 import { toNoteResponse, toSharedNoteResponse } from "../utils/noteResponse.js";
 import { User } from "../models/userModel.js";
+import { canEditNote, findSharedNoteByPath } from "../utils/sharedNoteAccess.js";
 
 const visibleNoteQuery = (userId, id) => ({
   _id: id,
@@ -155,16 +156,7 @@ export const shareNote = async (req, res, next) => {
 
 export const getSharedNoteByName = async (req, res, next) => {
   try {
-    const owner = await User.findOne({ username: req.params.username.toLowerCase() }).select("_id username");
-
-    if (!owner) {
-      return res.status(404).json({ message: "Shared note not found" });
-    }
-
-    const note = await Note.findOne({
-      owner: owner._id,
-      shareName: req.params.shareName.toLowerCase(),
-    }).populate("owner", "username");
+    const note = await findSharedNoteByPath(req.params);
 
     if (!note) {
       return res.status(404).json({ message: "Shared note not found" });
@@ -178,19 +170,14 @@ export const getSharedNoteByName = async (req, res, next) => {
 
 export const updateSharedNoteByName = async (req, res, next) => {
   try {
-    const owner = await User.findOne({ username: req.params.username.toLowerCase() }).select("_id username");
-
-    if (!owner) {
-      return res.status(404).json({ message: "Shared note not found" });
-    }
-
-    const note = await Note.findOne({
-      owner: owner._id,
-      shareName: req.params.shareName.toLowerCase(),
-    }).populate("owner", "username");
+    const note = await findSharedNoteByPath(req.params);
 
     if (!note) {
       return res.status(404).json({ message: "Shared note not found" });
+    }
+
+    if (!canEditNote(note, req.user)) {
+      return res.status(403).json({ message: "This shared link is view only" });
     }
 
     note.title = req.body.title;

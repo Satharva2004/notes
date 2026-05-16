@@ -140,10 +140,16 @@ export const getOpenApi = (_req, res) => {
           },
         },
       },
-      "/{shareName}": {
+      "/{username}/{shareName}": {
         get: {
-          summary: "Get a shared note by public share name",
+          summary: "Get a shared note by owner username and public share name",
           parameters: [
+            {
+              name: "username",
+              in: "path",
+              required: true,
+              schema: { type: "string" },
+            },
             {
               name: "shareName",
               in: "path",
@@ -159,6 +165,12 @@ export const getOpenApi = (_req, res) => {
         put: {
           summary: "Update a shared note when the link has editor permission",
           parameters: [
+            {
+              name: "username",
+              in: "path",
+              required: true,
+              schema: { type: "string" },
+            },
             {
               name: "shareName",
               in: "path",

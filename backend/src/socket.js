@@ -1,39 +1,27 @@
 import { Server } from "socket.io";
 import jwt from "jsonwebtoken";
 import { env } from "./config/env.js";
-import { Note } from "./models/noteModel.js";
 import { User } from "./models/userModel.js";
+import { canEditNote, findSocketNote, noteRoomName } from "./utils/sharedNoteAccess.js";
 
 const getUserFromToken = async (token) => {
   if (!token) return null;
 
   try {
     const payload = jwt.verify(token, env.jwtSecret);
-    return User.findById(payload.sub).select("_id email name");
+    return User.findById(payload.sub).select("_id email name username");
   } catch (_error) {
     return null;
   }
 };
 
-const roomName = ({ username, shareName }) =>
-  `note:${String(username).toLowerCase()}:${String(shareName).toLowerCase()}`;
-
-const findSharedNote = async ({ username, shareName }) => {
-  const owner = await User.findOne({ username: String(username).toLowerCase() }).select("_id");
-  if (!owner) return null;
-
-  return Note.findOne({
-    owner: owner._id,
-    shareName: String(shareName).toLowerCase(),
-  }).select("owner");
-};
-
-const canEditSharedNote = async ({ username, shareName, token }) => {
+const getEditableSocketNote = async ({ noteId, username, shareName, token }) => {
   const user = await getUserFromToken(token);
-  if (!user) return false;
+  const note = await findSocketNote({ noteId, username, shareName });
 
-  const note = await findSharedNote({ username, shareName });
-  return Boolean(note);
+  if (!canEditNote(note, user)) return null;
+
+  return note;
 };
 
 export const setupSocket = (server) => {
@@ -45,74 +33,69 @@ export const setupSocket = (server) => {
   });
 
   io.on("connection", (socket) => {
-    console.log(`[socket] client connected: ${socket.id}`);
+    console.log(`[socket] connected ${socket.id}`);
 
-    socket.on("note:join", async ({ username, shareName }) => {
-      if (!username || !shareName) {
-        console.log(`[socket] note:join rejected — missing username or shareName`);
+    socket.on("note:join", async ({ noteId, username, shareName }) => {
+      if (!noteId && (!username || !shareName)) {
+        console.log("[socket] join rejected: missing note id or shared path");
         return;
       }
 
-      const room = roomName({ username, shareName });
-      const note = await findSharedNote({ username, shareName });
-
+      const note = await findSocketNote({ noteId, username, shareName });
       if (!note) {
-        console.log(`[socket] note:join — note not found for ${username}/${shareName}`);
+        console.log("[socket] join rejected: note not found");
         return;
       }
 
+      const room = noteRoomName(note);
       socket.join(room);
-      console.log(`[socket] ${socket.id} joined room: ${room} (room size: ${io.sockets.adapter.rooms.get(room)?.size})`);
+      console.log(`[socket] ${socket.id} joined ${room}`);
     });
 
-    socket.on("note:leave", ({ username, shareName }) => {
-      if (!username || !shareName) return;
-      const room = roomName({ username, shareName });
+    socket.on("note:leave", async ({ noteId, username, shareName }) => {
+      const note = await findSocketNote({ noteId, username, shareName });
+      if (!note) return;
+
+      const room = noteRoomName(note);
       socket.leave(room);
-      console.log(`[socket] ${socket.id} left room: ${room}`);
+      console.log(`[socket] ${socket.id} left ${room}`);
     });
 
-    socket.on("note:change", async ({ username, shareName, title, content, token }) => {
-      if (!username || !shareName) {
-        console.log(`[socket] note:change rejected — missing username or shareName`);
+    socket.on("note:change", async ({ noteId, username, shareName, title, content, token }) => {
+      if (!noteId && (!username || !shareName)) {
+        console.log("[socket] change rejected: missing note id or shared path");
         return;
       }
 
-      const room = roomName({ username, shareName });
-      const roomSize = io.sockets.adapter.rooms.get(room)?.size ?? 0;
-      console.log(`[socket] note:change from ${socket.id} in room: ${room} (room size: ${roomSize})`);
-
-      if (!(await canEditSharedNote({ username, shareName, token }))) {
-        console.log(`[socket] note:change rejected — canEditSharedNote returned false`);
+      const note = await getEditableSocketNote({ noteId, username, shareName, token });
+      if (!note) {
+        console.log("[socket] change rejected: user cannot edit note");
         return;
       }
 
-      socket.to(room).emit("note:changed", {
+      socket.to(noteRoomName(note)).emit("note:changed", {
+        noteId: note._id.toString(),
         title,
         content,
       });
-      console.log(`[socket] note:changed broadcasted to room: ${room}`);
     });
 
-    socket.on("note:saved", async ({ username, shareName, note, token }) => {
-      if (!username || !shareName || !note) return;
+    socket.on("note:saved", async ({ noteId, username, shareName, note: savedNote, token }) => {
+      if ((!noteId && (!username || !shareName)) || !savedNote) return;
 
-      const room = roomName({ username, shareName });
-      console.log(`[socket] note:saved from ${socket.id} in room: ${room}`);
-
-      if (!(await canEditSharedNote({ username, shareName, token }))) {
-        console.log(`[socket] note:saved rejected — canEditSharedNote returned false`);
+      const note = await getEditableSocketNote({ noteId, username, shareName, token });
+      if (!note) {
+        console.log("[socket] save rejected: user cannot edit note");
         return;
       }
 
-      socket.to(room).emit("note:saved", {
-        note,
+      socket.to(noteRoomName(note)).emit("note:saved", {
+        note: savedNote,
       });
-      console.log(`[socket] note:saved broadcasted to room: ${room}`);
     });
 
     socket.on("disconnect", (reason) => {
-      console.log(`[socket] client disconnected: ${socket.id} (reason: ${reason})`);
+      console.log(`[socket] disconnected ${socket.id}: ${reason}`);
     });
   });
 };

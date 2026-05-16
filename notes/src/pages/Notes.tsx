@@ -261,15 +261,17 @@ export default function Notes() {
     loadSharedNote();
   }, [sharedRouteName, sharedRouteUsername]);
 
-  const canEdit = !isSharedMode || Boolean(user);
-  const needsLoginToEdit = isSharedMode && !user;
+  const canEdit = !isSharedMode || (permission === "editor" && Boolean(user));
+  const needsLoginToEdit = isSharedMode && permission === "editor" && !user;
+  const isViewOnlySharedNote = isSharedMode && permission !== "editor";
   const editedBy = sharedNote?.edited_by ?? [];
 
   useEffect(() => {
-    if (!liveShareName || (!sharedRouteUsername && isSharedMode)) return;
+    const hasSocketTarget = Boolean(currentNoteId || liveShareName);
+    if (!hasSocketTarget || (!sharedRouteUsername && isSharedMode)) return;
 
     const roomUsername = sharedRouteUsername || user?.username || sharedNote?.owner_username;
-    if (!roomUsername) return;
+    if (!currentNoteId && !roomUsername) return;
 
     const handleRemoteChange = ({ title: nextTitle, content }: { title: string; content: string }) => {
       applyingRemoteChangeRef.current = true;
@@ -291,7 +293,7 @@ export default function Notes() {
     };
 
     const joinRoom = () => {
-      socket.emit("note:join", { username: roomUsername, shareName: liveShareName });
+      socket.emit("note:join", { noteId: currentNoteId, username: roomUsername, shareName: liveShareName });
       socket.on("note:changed", handleRemoteChange);
       socket.on("note:saved", handleRemoteSave);
     };
@@ -304,12 +306,12 @@ export default function Notes() {
     }
 
     return () => {
-      socket.emit("note:leave", { username: roomUsername, shareName: liveShareName });
+      socket.emit("note:leave", { noteId: currentNoteId, username: roomUsername, shareName: liveShareName });
       socket.off("note:changed", handleRemoteChange);
       socket.off("note:saved", handleRemoteSave);
       socket.off("connect", joinRoom);
     };
-  }, [isSharedMode, liveShareName, sharedRouteUsername, sharedNote?.owner_username, user?.username]);
+  }, [currentNoteId, isSharedMode, liveShareName, sharedRouteUsername, sharedNote?.owner_username, user?.username]);
 
   useEffect(() => {
     if (!autoSave || !canEdit || draftVersion === 0 || isSaving) return;
@@ -386,12 +388,12 @@ export default function Notes() {
       if (isSharedMode) {
         setSharedNote(savedNote);
         if (liveShareName) {
-          socket.emit("note:saved", { username: roomUsername, shareName: liveShareName, note: savedNote, token: tokenStore.get() });
+          socket.emit("note:saved", { noteId: savedNote.id, username: roomUsername, shareName: liveShareName, note: savedNote, token: tokenStore.get() });
         }
       } else {
         setNotes((existingNotes) => [savedNote, ...existingNotes.filter((note) => note.id !== savedNote.id)]);
-        if (liveShareName && user?.username) {
-          socket.emit("note:saved", { username: user.username, shareName: liveShareName, note: savedNote, token: tokenStore.get() });
+        if ((savedNote.id || liveShareName) && user?.username) {
+          socket.emit("note:saved", { noteId: savedNote.id, username: user.username, shareName: liveShareName, note: savedNote, token: tokenStore.get() });
         }
       }
       setSavedAt("just now");
@@ -481,8 +483,9 @@ export default function Notes() {
             value={title}
             onChange={(e) => {
               setTitle(e.target.value);
-              if (liveShareName && canEdit && !applyingRemoteChangeRef.current) {
+              if ((currentNoteId || liveShareName) && canEdit && !applyingRemoteChangeRef.current) {
                 socket.emit("note:change", {
+                  noteId: currentNoteId,
                   username: sharedRouteUsername || user?.username || sharedNote?.owner_username,
                   shareName: liveShareName,
                   title: e.target.value,
@@ -615,6 +618,10 @@ export default function Notes() {
             {needsLoginToEdit ? (
               <Button size="sm" asChild>
                 <Link to="/auth" state={{ from: location.pathname }}>Sign in to edit</Link>
+              </Button>
+            ) : isViewOnlySharedNote ? (
+              <Button size="sm" disabled>
+                View only
               </Button>
             ) : (
               <Button size="sm" onClick={() => handleSave()} disabled={isSaving || !canEdit}>
@@ -798,8 +805,9 @@ export default function Notes() {
               if (!canEdit) return;
               saveEditorSelection();
               window.requestAnimationFrame(saveEditorSelection);
-              if (liveShareName && !applyingRemoteChangeRef.current) {
+              if ((currentNoteId || liveShareName) && !applyingRemoteChangeRef.current) {
                 socket.emit("note:change", {
+                  noteId: currentNoteId,
                   username: sharedRouteUsername || user?.username || sharedNote?.owner_username,
                   shareName: liveShareName,
                   title,
