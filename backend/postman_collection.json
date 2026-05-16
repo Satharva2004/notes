@@ -1,0 +1,339 @@
+{
+  "info": {
+    "name": "NoteTaking Backend API",
+    "description": "Postman collection for testing the NoteTaking backend APIs.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:5000"
+    },
+    {
+      "key": "email",
+      "value": "testuser@example.com"
+    },
+    {
+      "key": "password",
+      "value": "password123"
+    },
+    {
+      "key": "share_name",
+      "value": "atharva"
+    },
+    {
+      "key": "share_link",
+      "value": ""
+    },
+    {
+      "key": "access_token",
+      "value": ""
+    },
+    {
+      "key": "note_id",
+      "value": ""
+    }
+  ],
+  "item": [
+    {
+      "name": "Register New User",
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/register",
+          "host": ["{{base_url}}"],
+          "path": ["register"]
+        }
+      }
+    },
+    {
+      "name": "Login",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const json = pm.response.json();",
+              "if (json.access_token) {",
+              "  pm.collectionVariables.set('access_token', json.access_token);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"email\": \"{{email}}\",\n  \"password\": \"{{password}}\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/login",
+          "host": ["{{base_url}}"],
+          "path": ["login"]
+        }
+      }
+    },
+    {
+      "name": "Get All Notes",
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/notes",
+          "host": ["{{base_url}}"],
+          "path": ["notes"]
+        }
+      }
+    },
+    {
+      "name": "Create Note",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const json = pm.response.json();",
+              "if (json.id) {",
+              "  pm.collectionVariables.set('note_id', json.id);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"title\": \"First note\",\n  \"content\": \"This note was created from Postman.\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/notes",
+          "host": ["{{base_url}}"],
+          "path": ["notes"]
+        }
+      }
+    },
+    {
+      "name": "Get Specific Note",
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/notes/{{note_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["notes", "{{note_id}}"]
+        }
+      }
+    },
+    {
+      "name": "Update Note",
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"title\": \"Updated note\",\n  \"content\": \"This note was updated from Postman.\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/notes/{{note_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["notes", "{{note_id}}"]
+        }
+      }
+    },
+    {
+      "name": "Share Note",
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "const json = pm.response.json();",
+              "if (json.share_link) {",
+              "  pm.collectionVariables.set('share_link', json.share_link);",
+              "}"
+            ]
+          }
+        }
+      ],
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "POST",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"share_name\": \"{{share_name}}\",\n  \"permission\": \"editor\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/notes/{{note_id}}/share",
+          "host": ["{{base_url}}"],
+          "path": ["notes", "{{note_id}}", "share"]
+        }
+      }
+    },
+    {
+      "name": "Get Shared Note By Link Name",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/{{share_name}}",
+          "host": ["{{base_url}}"],
+          "path": ["{{share_name}}"]
+        }
+      }
+    },
+    {
+      "name": "Update Shared Note By Link Name",
+      "request": {
+        "method": "PUT",
+        "header": [
+          {
+            "key": "Content-Type",
+            "value": "application/json"
+          }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"title\": \"Edited from shared link\",\n  \"content\": \"This note was edited through the public editor link.\"\n}"
+        },
+        "url": {
+          "raw": "{{base_url}}/{{share_name}}",
+          "host": ["{{base_url}}"],
+          "path": ["{{share_name}}"]
+        }
+      }
+    },
+    {
+      "name": "Delete Note",
+      "request": {
+        "auth": {
+          "type": "bearer",
+          "bearer": [
+            {
+              "key": "token",
+              "value": "{{access_token}}",
+              "type": "string"
+            }
+          ]
+        },
+        "method": "DELETE",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/notes/{{note_id}}",
+          "host": ["{{base_url}}"],
+          "path": ["notes", "{{note_id}}"]
+        }
+      }
+    },
+    {
+      "name": "OpenAPI JSON",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/openapi.json",
+          "host": ["{{base_url}}"],
+          "path": ["openapi.json"]
+        }
+      }
+    },
+    {
+      "name": "About",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{base_url}}/about",
+          "host": ["{{base_url}}"],
+          "path": ["about"]
+        }
+      }
+    }
+  ]
+}

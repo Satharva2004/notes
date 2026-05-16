@@ -26,6 +26,7 @@ const App = () => (
               <Route path="/" element={<Index />} />
               <Route path="/dashboard" element={<ProtectedRoute><Notes /></ProtectedRoute>} />
               <Route path="/notes" element={<ProtectedRoute><Notes /></ProtectedRoute>} />
+              <Route path="/:username/:shareName" element={<Notes />} />
               <Route path="*" element={<NotFound />} />
             </Routes>
           </AuthProvider>

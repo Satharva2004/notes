@@ -1,7 +1,8 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useTheme } from "next-themes";
-import data from "@emoji-mart/data";
-import Picker from "@emoji-mart/react";
+import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
+import { Picker } from "emoji-mart-custom";
+import "emoji-mart-custom/css/emoji-mart.css";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import {
@@ -40,6 +41,11 @@ import { Switch } from "@/components/ui/switch";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
   ToggleGroup,
   ToggleGroupItem,
 } from "@/components/ui/toggle-group";
@@ -59,8 +65,6 @@ import {
   Share2,
   Plus,
   History,
-  Link2,
-  Copy,
   StickyNote,
   Quote,
   Code,
@@ -74,20 +78,10 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
+import { api, Note, tokenStore } from "@/lib/api";
+import { socket } from "@/lib/socket";
 
-type NoteHistoryItem = {
-  id: string;
-  title: string;
-  preview: string;
-  updatedAt: string;
-};
 
-const SAMPLE_HISTORY: NoteHistoryItem[] = [
-  { id: "1", title: "Product roadmap Q3", preview: "Goals, milestones and key bets for the quarter...", updatedAt: "2h ago" },
-  { id: "2", title: "Meeting notes — design sync", preview: "Discussed new editor toolbar, share flow...", updatedAt: "Yesterday" },
-  { id: "3", title: "Reading list", preview: "Books, essays and papers to read this month...", updatedAt: "3 days ago" },
-  { id: "4", title: "Trip to Lisbon", preview: "Flights, places, restaurants and pastel de nata...", updatedAt: "Last week" },
-];
 
 const COLORS = ["#0a0a0b", "#ef4444", "#f97316", "#eab308", "#22c55e", "#06b6d4", "#6366f1", "#a855f7", "#ec4899"];
 
@@ -101,43 +95,363 @@ const FONTS = [
 ];
 
 export default function Notes() {
+  const { shareName: sharedRouteName } = useParams();
+  const { username: sharedRouteUsername } = useParams();
+  const location = useLocation();
+  const navigate = useNavigate();
   const editorRef = useRef<HTMLDivElement>(null);
+  const savedSelectionRef = useRef<Range | null>(null);
+  const savedCaretOffsetRef = useRef(0);
   const { theme, setTheme, resolvedTheme } = useTheme();
   const { user, profile, signOut } = useAuth();
+  const isSharedMode = Boolean(sharedRouteName);
 
   const [title, setTitle] = useState("Untitled note");
   const [permission, setPermission] = useState<"viewer" | "editor">("editor");
   const [autoSave, setAutoSave] = useState(true);
   const [fontFamily, setFontFamily] = useState(FONTS[0].value);
   const [savedAt, setSavedAt] = useState<string | null>(null);
-  const [shareOpen, setShareOpen] = useState(false);
   const [editOpen, setEditOpen] = useState(false);
   const [displayName, setDisplayName] = useState(profile?.full_name ?? "");
+  const [notes, setNotes] = useState<Note[]>([]);
+  const [currentNoteId, setCurrentNoteId] = useState<string | null>(null);
+  const [shareName, setShareName] = useState("");
+  const [isSaving, setIsSaving] = useState(false);
+  const [isLoadingNotes, setIsLoadingNotes] = useState(false);
+  const [sharedNote, setSharedNote] = useState<Note | null>(null);
+  const [shareNameEdited, setShareNameEdited] = useState(false);
+  const [draftVersion, setDraftVersion] = useState(0);
+  const [liveShareName, setLiveShareName] = useState("");
+  const applyingRemoteChangeRef = useRef(false);
+
+  const formatUpdatedAt = (date: string) =>
+    new Intl.DateTimeFormat(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "numeric",
+      minute: "2-digit",
+    }).format(new Date(date));
+
+  const saveEditorSelection = () => {
+    const editor = editorRef.current;
+    const selection = window.getSelection();
+    if (!editor || !selection || selection.rangeCount === 0) return;
+    if (document.activeElement !== editor) return;
+
+    const range = selection.getRangeAt(0);
+    if (editor.contains(range.commonAncestorContainer)) {
+      savedSelectionRef.current = range.cloneRange();
+      const prefixRange = range.cloneRange();
+      prefixRange.selectNodeContents(editor);
+      prefixRange.setEnd(range.endContainer, range.endOffset);
+      savedCaretOffsetRef.current = prefixRange.toString().length;
+    }
+  };
+
+  const findCaretPosition = (offset: number) => {
+    const editor = editorRef.current;
+    if (!editor) return null;
+
+    const walker = document.createTreeWalker(editor, NodeFilter.SHOW_TEXT);
+    let remaining = offset;
+    let current = walker.nextNode();
+
+    while (current) {
+      const length = current.textContent?.length ?? 0;
+      if (remaining <= length) {
+        return { node: current, offset: remaining };
+      }
+      remaining -= length;
+      current = walker.nextNode();
+    }
+
+    return { node: editor, offset: editor.childNodes.length };
+  };
+
+  const restoreEditorSelection = (preferCaretOffset = false, caretOffset = savedCaretOffsetRef.current) => {
+    const selection = window.getSelection();
+    const range = preferCaretOffset ? document.createRange() : savedSelectionRef.current;
+    if (!selection || !range) return;
+
+    if (preferCaretOffset) {
+      const caretPosition = findCaretPosition(caretOffset);
+      if (!caretPosition) return;
+      range.setStart(caretPosition.node, caretPosition.offset);
+      range.collapse(true);
+    }
+
+    selection.removeAllRanges();
+    selection.addRange(range);
+  };
+
+  const notePreview = (content: string) => {
+    const plainText = content.replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+    return plainText || "No content yet";
+  };
+
+  const toShareName = (value: string) =>
+    value.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/(^-|-$)/g, "").slice(0, 50);
+
+  const editorInitials = (name: string, email: string) =>
+    (name || email)
+      .split(/[ @._-]/)
+      .filter(Boolean)
+      .map((part) => part[0])
+      .join("")
+      .toUpperCase()
+      .slice(0, 2);
+
+  const loadNote = (note: Note) => {
+    setCurrentNoteId(note.id);
+    setTitle(note.title);
+    setShareName(note.share_name || toShareName(note.title));
+    setShareNameEdited(Boolean(note.share_name));
+    setLiveShareName(note.share_name || "");
+    if (editorRef.current) editorRef.current.innerHTML = note.content;
+  };
+
+  useEffect(() => {
+    document.addEventListener("selectionchange", saveEditorSelection);
+    return () => document.removeEventListener("selectionchange", saveEditorSelection);
+  });
+
+  useEffect(() => {
+    if (isSharedMode || !user) return;
+
+    const loadNotes = async () => {
+      setIsLoadingNotes(true);
+      try {
+        const fetchedNotes = await api.getNotes();
+        setNotes(fetchedNotes);
+        if (fetchedNotes[0]) setTimeout(() => loadNote(fetchedNotes[0]), 0);
+      } catch (error: any) {
+        toast.error("Could not load notes", { description: error.message });
+      } finally {
+        setIsLoadingNotes(false);
+      }
+    };
+
+    loadNotes();
+  }, [isSharedMode, user]);
+
+  useEffect(() => {
+    if (!sharedRouteName) return;
+
+    const loadSharedNote = async () => {
+      setIsLoadingNotes(true);
+      try {
+        if (!sharedRouteUsername) return;
+        const note = await api.getSharedNote(sharedRouteUsername, sharedRouteName);
+        setSharedNote(note);
+        setTitle(note.title);
+        setShareName(sharedRouteName);
+        setLiveShareName(sharedRouteName);
+        setCurrentNoteId(note.id);
+        setPermission(note.permission ?? "viewer");
+        setTimeout(() => {
+          if (editorRef.current) editorRef.current.innerHTML = note.content;
+        }, 0);
+      } catch (error: any) {
+        toast.error("Could not load shared note", { description: error.message });
+      } finally {
+        setIsLoadingNotes(false);
+      }
+    };
+
+    loadSharedNote();
+  }, [sharedRouteName, sharedRouteUsername]);
+
+  const canEdit = !isSharedMode || Boolean(user);
+  const needsLoginToEdit = isSharedMode && !user;
+  const editedBy = sharedNote?.edited_by ?? [];
+
+  useEffect(() => {
+    if (!liveShareName || (!sharedRouteUsername && isSharedMode)) return;
+
+    const roomUsername = sharedRouteUsername || user?.username || sharedNote?.owner_username;
+    if (!roomUsername) return;
+
+    const handleRemoteChange = ({ title: nextTitle, content }: { title: string; content: string }) => {
+      applyingRemoteChangeRef.current = true;
+      setTitle(nextTitle);
+      if (editorRef.current) {
+        editorRef.current.innerHTML = content;
+      }
+      window.setTimeout(() => {
+        applyingRemoteChangeRef.current = false;
+      }, 0);
+    };
+
+    const handleRemoteSave = ({ note }: { note: Note }) => {
+      setSharedNote(note);
+      setTitle(note.title);
+      if (editorRef.current && document.activeElement !== editorRef.current) {
+        editorRef.current.innerHTML = note.content;
+      }
+    };
+
+    const joinRoom = () => {
+      socket.emit("note:join", { username: roomUsername, shareName: liveShareName });
+      socket.on("note:changed", handleRemoteChange);
+      socket.on("note:saved", handleRemoteSave);
+    };
+
+    if (socket.connected) {
+      joinRoom();
+    } else {
+      socket.connect();
+      socket.once("connect", joinRoom);
+    }
+
+    return () => {
+      socket.emit("note:leave", { username: roomUsername, shareName: liveShareName });
+      socket.off("note:changed", handleRemoteChange);
+      socket.off("note:saved", handleRemoteSave);
+      socket.off("connect", joinRoom);
+    };
+  }, [isSharedMode, liveShareName, sharedRouteUsername, sharedNote?.owner_username, user?.username]);
+
+  useEffect(() => {
+    if (!autoSave || !canEdit || draftVersion === 0 || isSaving) return;
+
+    const timeout = window.setTimeout(() => {
+      handleSave({ silent: true });
+    }, 1200);
+
+    return () => window.clearTimeout(timeout);
+  }, [autoSave, canEdit, draftVersion]);
 
   const exec = (command: string, value?: string) => {
     editorRef.current?.focus();
+    restoreEditorSelection();
     document.execCommand(command, false, value);
+    saveEditorSelection();
   };
 
   const insertChecklist = () => {
     editorRef.current?.focus();
+    restoreEditorSelection();
     const html = `<div class="flex items-start gap-2 my-1"><input type="checkbox" class="mt-1.5 accent-primary" /><span>To-do item</span></div>`;
     document.execCommand("insertHTML", false, html);
+    saveEditorSelection();
   };
 
   const insertEmoji = (e: string) => {
+    const caretOffset = savedCaretOffsetRef.current;
     editorRef.current?.focus();
-    document.execCommand("insertText", false, e);
+    restoreEditorSelection(true, caretOffset);
+    const selection = window.getSelection();
+    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+
+    if (range) {
+      range.deleteContents();
+      const emojiNode = document.createTextNode(e);
+      range.insertNode(emojiNode);
+      range.setStartAfter(emojiNode);
+      range.collapse(true);
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    } else {
+      document.execCommand("insertHTML", false, e);
+    }
+
+    saveEditorSelection();
+    if (canEdit) setDraftVersion((version) => version + 1);
   };
 
-  const handleSave = () => toast.success("Note saved", { description: title });
-  const shareUrl = `${window.location.origin}/notes/shared/abc123`;
-  const handleCopyLink = () => {
-    navigator.clipboard.writeText(shareUrl);
-    toast.success("Share link copied");
+  const handleSave = async (options: { silent?: boolean } = {}) => {
+    if (!canEdit) {
+      toast.error("Sign in to edit this shared note");
+      return null;
+    }
+
+    const content = editorRef.current?.innerHTML ?? "";
+
+    if (!title.trim()) {
+      toast.error("Title is required");
+      return null;
+    }
+
+    setIsSaving(true);
+    try {
+      const roomUsername = sharedRouteUsername || sharedNote?.owner_username || user?.username || "";
+      const savedNote = isSharedMode && sharedRouteName
+        ? await api.updateSharedNote(roomUsername, sharedRouteName, { title: title.trim(), content })
+        : currentNoteId
+          ? await api.updateNote(currentNoteId, { title: title.trim(), content })
+          : await api.createNote({ title: title.trim(), content });
+
+      setCurrentNoteId(savedNote.id);
+      if (savedNote.share_name) setLiveShareName(savedNote.share_name);
+      if (isSharedMode) {
+        setSharedNote(savedNote);
+        if (liveShareName) {
+          socket.emit("note:saved", { username: roomUsername, shareName: liveShareName, note: savedNote, token: tokenStore.get() });
+        }
+      } else {
+        setNotes((existingNotes) => [savedNote, ...existingNotes.filter((note) => note.id !== savedNote.id)]);
+        if (liveShareName && user?.username) {
+          socket.emit("note:saved", { username: user.username, shareName: liveShareName, note: savedNote, token: tokenStore.get() });
+        }
+      }
+      setSavedAt("just now");
+      if (!options.silent) {
+        toast.success("Note saved", { description: savedNote.title });
+      }
+      return savedNote;
+    } catch (error: any) {
+      toast.error("Could not save note", { description: error.message });
+      return null;
+    } finally {
+      setIsSaving(false);
+    }
   };
+
+  const handleShare = async () => {
+    if (isSharedMode) return;
+
+    const savedNote = currentNoteId ? notes.find((note) => note.id === currentNoteId) ?? (await handleSave()) : await handleSave();
+
+    if (!savedNote) return;
+
+    try {
+      const normalizedShareName = toShareName(shareName || title);
+      const response = await api.shareNote(savedNote.id, normalizedShareName, permission);
+      const username = response.username || savedNote.owner_username || user?.username;
+      if (!username) {
+        toast.error("Could not create share URL", {
+          description: "Please sign out and sign in again, then try sharing.",
+        });
+        return;
+      }
+      setShareName(normalizedShareName);
+      setLiveShareName(normalizedShareName);
+      const shareUrl = `${window.location.origin}/${username}/${normalizedShareName}`;
+      try {
+        await navigator.clipboard.writeText(shareUrl);
+        toast.success("Link copied to clipboard!", { description: shareUrl });
+      } catch {
+        toast.success(response.message, { description: shareUrl });
+      }
+    } catch (error: any) {
+      if (error.message.includes("already")) {
+        toast.error("That note URL already exists", {
+          description: "Change the note name or type a custom share name.",
+        });
+      } else {
+        toast.error("Could not create share link", { description: error.message });
+      }
+    }
+  };
+
   const handleNew = () => {
+    if (isSharedMode) return;
+
+    setCurrentNoteId(null);
     setTitle("Untitled note");
+    setShareName("");
+    setShareNameEdited(false);
+    setLiveShareName("");
     if (editorRef.current) editorRef.current.innerHTML = "";
     editorRef.current?.focus();
   };
@@ -165,16 +479,70 @@ export default function Notes() {
 
           <Input
             value={title}
-            onChange={(e) => setTitle(e.target.value)}
+            onChange={(e) => {
+              setTitle(e.target.value);
+              if (liveShareName && canEdit && !applyingRemoteChangeRef.current) {
+                socket.emit("note:change", {
+                  username: sharedRouteUsername || user?.username || sharedNote?.owner_username,
+                  shareName: liveShareName,
+                  title: e.target.value,
+                  content: editorRef.current?.innerHTML ?? "",
+                  token: tokenStore.get(),
+                });
+              }
+              if (canEdit) setDraftVersion((version) => version + 1);
+              if (!shareNameEdited) {
+                setShareName(toShareName(e.target.value));
+              }
+            }}
+            disabled={!canEdit}
             className="max-w-md border-none shadow-none text-sm font-medium focus-visible:ring-0 px-2"
             placeholder="Untitled note"
           />
 
+          {isSharedMode && editedBy.length > 0 && (
+            <div className="hidden lg:flex items-center gap-2">
+              <span className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
+                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
+                </span>
+                Live
+              </span>
+              <div className="flex -space-x-2">
+                {editedBy.slice(0, 5).map((entry) => {
+                  const AVATAR_COLORS = ["bg-violet-500","bg-rose-500","bg-amber-500","bg-sky-500","bg-emerald-500","bg-pink-500","bg-indigo-500","bg-teal-500"];
+                  const avatarColor = AVATAR_COLORS[entry.email.charCodeAt(0) % AVATAR_COLORS.length];
+                  return (
+                    <Tooltip key={entry.email}>
+                      <TooltipTrigger asChild>
+                        <span className={`grid h-7 w-7 place-items-center rounded-full ring-2 ring-background ${avatarColor} text-[10px] font-semibold text-white cursor-default select-none`}>
+                          {editorInitials(entry.name, entry.email)}
+                        </span>
+                      </TooltipTrigger>
+                      <TooltipContent side="bottom" className="flex flex-col gap-0.5">
+                        <p className="font-medium">{entry.name || entry.email}</p>
+                        {entry.name && <p className="text-xs text-muted-foreground">{entry.email}</p>}
+                      </TooltipContent>
+                    </Tooltip>
+                  );
+                })}
+                {editedBy.length > 5 && (
+                  <span className="grid h-7 w-7 place-items-center rounded-full ring-2 ring-background bg-muted text-[10px] font-semibold text-muted-foreground">
+                    +{editedBy.length - 5}
+                  </span>
+                )}
+              </div>
+            </div>
+          )}
+
           <div className="ml-auto flex items-center gap-1.5">
-            <Button variant="ghost" size="sm" onClick={handleNew}>
-              <Plus className="h-4 w-4 sm:mr-1.5" />
-              <span className="hidden sm:inline">New</span>
-            </Button>
+            {(!isSharedMode || user) && (
+              <Button variant="ghost" size="sm" onClick={isSharedMode ? () => navigate("/notes") : handleNew}>
+                <Plus className="h-4 w-4 sm:mr-1.5" />
+                <span className="hidden sm:inline">New</span>
+              </Button>
+            )}
 
             <Sheet>
               <SheetTrigger asChild>
@@ -190,16 +558,46 @@ export default function Notes() {
                 </SheetHeader>
                 <ScrollArea className="h-[calc(100vh-7rem)] mt-4 -mx-2 pr-2">
                   <div className="flex flex-col gap-1 px-2">
-                    {SAMPLE_HISTORY.map((n) => (
+                    {isSharedMode && editedBy.length > 0 && (
+                      <div className="px-3 py-2">
+                        <p className="text-xs font-medium text-foreground">People with activity</p>
+                        <div className="mt-2 flex flex-wrap gap-2">
+                          {editedBy.map((entry) => (
+                            <Tooltip key={entry.email}>
+                              <TooltipTrigger asChild>
+                                <span className="inline-flex items-center gap-2 rounded-md bg-muted px-2 py-1 text-xs text-muted-foreground">
+                                  <span className="grid h-5 w-5 place-items-center rounded-full bg-background text-[9px] font-medium text-foreground">
+                                    {editorInitials(entry.name, entry.email)}
+                                  </span>
+                                  {entry.name || entry.email}
+                                </span>
+                              </TooltipTrigger>
+                              <TooltipContent>
+                                <p>{entry.name || entry.email}</p>
+                                <p className="text-xs text-muted-foreground">{entry.email}</p>
+                              </TooltipContent>
+                            </Tooltip>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+                    {!isSharedMode && isLoadingNotes && (
+                      <p className="px-3 py-2 text-sm text-muted-foreground">Loading notes...</p>
+                    )}
+                    {!isSharedMode && !isLoadingNotes && notes.length === 0 && (
+                      <p className="px-3 py-2 text-sm text-muted-foreground">No saved notes yet.</p>
+                    )}
+                    {!isSharedMode && notes.map((n) => (
                       <button
                         key={n.id}
+                        onClick={() => loadNote(n)}
                         className="text-left rounded-md p-3 hover:bg-accent transition-colors border border-transparent hover:border-border"
                       >
                         <div className="flex items-start justify-between gap-3">
                           <span className="font-medium text-sm truncate">{n.title}</span>
-                          <span className="text-xs text-muted-foreground shrink-0">{n.updatedAt}</span>
+                          <span className="text-xs text-muted-foreground shrink-0">{formatUpdatedAt(n.updated_at)}</span>
                         </div>
-                        <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{n.preview}</p>
+                        <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{notePreview(n.content)}</p>
                       </button>
                     ))}
                   </div>
@@ -207,59 +605,23 @@ export default function Notes() {
               </SheetContent>
             </Sheet>
 
-            <Dialog open={shareOpen} onOpenChange={setShareOpen}>
-              <DialogTrigger asChild>
-                <Button variant="outline" size="sm">
-                  <Share2 className="h-4 w-4 sm:mr-1.5" />
-                  <span className="hidden sm:inline">Share</span>
-                </Button>
-              </DialogTrigger>
-              <DialogContent className="sm:max-w-md">
-                <DialogHeader>
-                  <DialogTitle>Share this note</DialogTitle>
-                  <DialogDescription>Anyone with the link can access this note.</DialogDescription>
-                </DialogHeader>
+            {!isSharedMode && (
+              <Button variant="outline" size="sm" onClick={handleShare}>
+                <Share2 className="h-4 w-4 sm:mr-1.5" />
+                <span className="hidden sm:inline">Share</span>
+              </Button>
+            )}
 
-                <div className="space-y-4 py-2">
-                  <div className="flex items-center justify-between gap-3 rounded-md border border-border p-3">
-                    <div className="space-y-0.5 min-w-0">
-                      <Label className="text-sm">Permission</Label>
-                      <p className="text-xs text-muted-foreground truncate">
-                        {permission === "editor" ? "Recipients can view and edit" : "Recipients can view only"}
-                      </p>
-                    </div>
-                    <div className="flex items-center gap-2 shrink-0">
-                      <span className="text-xs text-muted-foreground">View</span>
-                      <Switch
-                        checked={permission === "editor"}
-                        onCheckedChange={(c) => setPermission(c ? "editor" : "viewer")}
-                      />
-                      <span className="text-xs text-muted-foreground">Edit</span>
-                    </div>
-                  </div>
-
-                  <div className="flex items-center gap-2">
-                    <div className="flex-1 min-w-0 flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm bg-muted/40">
-                      <Link2 className="h-4 w-4 text-muted-foreground shrink-0" />
-                      <span className="truncate text-muted-foreground">{shareUrl}</span>
-                    </div>
-                    <Button onClick={handleCopyLink} size="sm" className="shrink-0">
-                      <Copy className="h-4 w-4 sm:mr-1.5" />
-                      <span className="hidden sm:inline">Copy</span>
-                    </Button>
-                  </div>
-                </div>
-
-                <DialogFooter>
-                  <Button variant="ghost" onClick={() => setShareOpen(false)}>Done</Button>
-                </DialogFooter>
-              </DialogContent>
-            </Dialog>
-
-            <Button size="sm" onClick={handleSave}>
-              <Save className="h-4 w-4 sm:mr-1.5" />
-              <span className="hidden sm:inline">Save</span>
-            </Button>
+            {needsLoginToEdit ? (
+              <Button size="sm" asChild>
+                <Link to="/auth" state={{ from: location.pathname }}>Sign in to edit</Link>
+              </Button>
+            ) : (
+              <Button size="sm" onClick={() => handleSave()} disabled={isSaving || !canEdit}>
+                <Save className="h-4 w-4 sm:mr-1.5" />
+                <span className="hidden sm:inline">{isSaving ? "Saving" : "Save"}</span>
+              </Button>
+            )}
 
             <Separator orientation="vertical" className="h-6 mx-1" />
 
@@ -352,16 +714,32 @@ export default function Notes() {
 
             <Popover>
               <PopoverTrigger asChild>
-                <Button variant="ghost" size="sm"><Smile className="h-4 w-4" /></Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                    saveEditorSelection();
+                  }}
+                  onPointerDown={(event) => {
+                    event.preventDefault();
+                    saveEditorSelection();
+                  }}
+                >
+                  <Smile className="h-4 w-4" />
+                </Button>
               </PopoverTrigger>
               <PopoverContent className="w-auto p-0 border-none bg-transparent shadow-none" align="start">
                 <Picker
-                  data={data}
                   set="apple"
-                  theme={resolvedTheme === "dark" ? "dark" : "light"}
-                  previewPosition="none"
-                  skinTonePosition="search"
-                  onEmojiSelect={(e: { native: string }) => insertEmoji(e.native)}
+                  native
+                  showPreview={false}
+                  emojiTooltip
+                  color="#6366f1"
+                  onClick={(emoji: { native?: string }, event: MouseEvent) => {
+                    event.preventDefault();
+                    if (emoji.native) insertEmoji(emoji.native);
+                  }}
                 />
               </PopoverContent>
             </Popover>
@@ -408,12 +786,29 @@ export default function Notes() {
         <div className="mx-auto max-w-3xl px-4 md:px-8 py-10">
           <div
             ref={editorRef}
-            contentEditable
+            contentEditable={canEdit}
             suppressContentEditableWarning
             data-placeholder="Start writing your note..."
             style={{ fontFamily }}
+            onFocus={saveEditorSelection}
+            onMouseUp={saveEditorSelection}
+            onKeyUp={saveEditorSelection}
+            onBlur={saveEditorSelection}
             onInput={() => {
+              if (!canEdit) return;
+              saveEditorSelection();
+              window.requestAnimationFrame(saveEditorSelection);
+              if (liveShareName && !applyingRemoteChangeRef.current) {
+                socket.emit("note:change", {
+                  username: sharedRouteUsername || user?.username || sharedNote?.owner_username,
+                  shareName: liveShareName,
+                  title,
+                  content: editorRef.current?.innerHTML ?? "",
+                  token: tokenStore.get(),
+                });
+              }
               if (!autoSave) return;
+              setDraftVersion((version) => version + 1);
               setSavedAt("just now");
             }}
             className="notes-editor min-h-[60vh] outline-none text-base leading-relaxed focus:outline-none"
