@@ -1,3 +1,6 @@
-const PORT = process.env.PORT || 5000;
+import { app } from "./app.js";
+import { env } from "./config/env.js";
 
-console.log(`Backend entry point running on port ${PORT}`);
+app.listen(env.port, () => {
+  console.log(`Backend server running on port ${env.port}`);
+});
