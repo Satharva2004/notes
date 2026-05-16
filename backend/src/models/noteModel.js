@@ -1,5 +1,7 @@
 import mongoose from "mongoose";
 
+export const MAX_NOTE_CONTENT_LENGTH = 5_000_000;
+
 const noteSchema = new mongoose.Schema(
   {
     title: {
@@ -12,8 +14,14 @@ const noteSchema = new mongoose.Schema(
     content: {
       type: String,
       trim: true,
-      maxlength: [10000, "Content cannot exceed 10000 characters"],
+      maxlength: [MAX_NOTE_CONTENT_LENGTH, "Content cannot exceed 5MB"],
       default: "",
+    },
+    fontFamily: {
+      type: String,
+      trim: true,
+      maxlength: [160, "Font family cannot exceed 160 characters"],
+      default: "'Geist', system-ui, sans-serif",
     },
     owner: {
       type: mongoose.Schema.Types.ObjectId,
@@ -24,7 +32,6 @@ const noteSchema = new mongoose.Schema(
       type: String,
       trim: true,
       lowercase: true,
-      sparse: true,
       match: [/^[a-z0-9-]+$/, "Share name can only contain lowercase letters, numbers, and hyphens"],
     },
     sharePermission: {
@@ -60,6 +67,10 @@ const noteSchema = new mongoose.Schema(
 );
 
 noteSchema.index({ owner: 1, updatedAt: -1 });
-noteSchema.index({ owner: 1, shareName: 1 }, { unique: true, sparse: true });
+noteSchema.index(
+  { owner: 1, shareName: 1 },
+  { unique: true, partialFilterExpression: { shareName: { $type: "string" } } }
+);
+noteSchema.index({ title: "text", content: "text" });
 
 export const Note = mongoose.model("Note", noteSchema);

@@ -4,6 +4,7 @@ import {
   deleteNote,
   getNoteById,
   getNotes,
+  searchNotes,
   shareNote,
   updateNote,
 } from "../controllers/noteController.js";
@@ -17,6 +18,7 @@ export const noteRoutes = Router();
 noteRoutes.use(requireAuth);
 
 noteRoutes.get("/", getNotes);
+noteRoutes.get("/search", searchNotes);
 noteRoutes.post("/", validateNoteCreate, createNote);
 noteRoutes.get("/:id", validateObjectId("id"), getNoteById);
 noteRoutes.put("/:id", validateObjectId("id"), validateNoteUpdate, updateNote);

@@ -1,4 +1,6 @@
-const allowedFields = ["title", "content"];
+import { MAX_NOTE_CONTENT_LENGTH } from "../models/noteModel.js";
+
+const allowedFields = ["title", "content", "font_family"];
 
 const validateNotePayload = (payload, { requireTitle }) => {
   const errors = [];
@@ -24,13 +26,21 @@ const validateNotePayload = (payload, { requireTitle }) => {
   if (payload.content !== undefined) {
     if (typeof payload.content !== "string") {
       errors.push("Content must be a string");
-    } else if (payload.content.length > 10000) {
-      errors.push("Content cannot exceed 10000 characters");
+    } else if (payload.content.length > MAX_NOTE_CONTENT_LENGTH) {
+      errors.push("Content cannot exceed 5MB");
     }
   }
 
   if (payload.content === undefined) {
     errors.push("Content is required");
+  }
+
+  if (payload.font_family !== undefined) {
+    if (typeof payload.font_family !== "string") {
+      errors.push("font_family must be a string");
+    } else if (payload.font_family.trim().length > 160) {
+      errors.push("font_family cannot exceed 160 characters");
+    }
   }
 
   return errors;

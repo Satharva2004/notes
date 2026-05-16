@@ -91,7 +91,7 @@ export const setupSocket = (server) => {
       console.log(`[socket] ${socket.id} left ${room}`);
     });
 
-    socket.on("note:change", async ({ noteId, username, shareName, title, content, token }) => {
+    socket.on("note:change", async ({ noteId, username, shareName, title, content, fontFamily, token }) => {
       if (!noteId && (!username || !shareName)) {
         console.log("[socket] change rejected: missing note id or shared path");
         return;
@@ -107,6 +107,7 @@ export const setupSocket = (server) => {
         noteId: note._id.toString(),
         title,
         content,
+        fontFamily,
       });
     });
 

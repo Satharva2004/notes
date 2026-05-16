@@ -6,6 +6,10 @@ type RequestOptions = RequestInit & {
   auth?: boolean;
 };
 
+type NotePayload = Pick<Note, "title" | "content"> & {
+  font_family?: string;
+};
+
 export type Note = {
   id: string;
   title: string;
@@ -16,6 +20,7 @@ export type Note = {
   owner_username?: string;
   share_permission?: "viewer" | "editor";
   permission?: "viewer" | "editor";
+  font_family?: string;
   edited_by?: Array<{
     name: string;
     email: string;
@@ -66,6 +71,14 @@ const request = async <T>(path: string, options: RequestOptions = {}): Promise<T
   return data as T;
 };
 
+export type PaginatedNotes = {
+  notes: Note[];
+  total: number;
+  page: number;
+  limit: number;
+  pages: number;
+};
+
 export const api = {
   register: (email: string, password: string, name?: string) =>
     request<{ message: string }>("/register", {
@@ -79,16 +92,19 @@ export const api = {
       body: JSON.stringify({ email, password }),
     }),
 
-  getNotes: () => request<Note[]>("/notes", { auth: true }),
+  getNotes: (page = 1, limit = 50) => request<PaginatedNotes>(`/notes?page=${page}&limit=${limit}`, { auth: true }),
+  
+  searchNotes: (keyword: string, page = 1, limit = 50) => 
+    request<PaginatedNotes>(`/notes/search?q=${encodeURIComponent(keyword)}&page=${page}&limit=${limit}`, { auth: true }),
 
-  createNote: (payload: Pick<Note, "title" | "content">) =>
+  createNote: (payload: NotePayload) =>
     request<Note>("/notes", {
       method: "POST",
       auth: true,
       body: JSON.stringify(payload),
     }),
 
-  updateNote: (id: string, payload: Pick<Note, "title" | "content">) =>
+  updateNote: (id: string, payload: NotePayload) =>
     request<Note>(`/notes/${id}`, {
       method: "PUT",
       auth: true,
@@ -110,7 +126,7 @@ export const api = {
 
   getSharedNote: (username: string, shareName: string) => request<Note>(`/${username}/${shareName}`),
 
-  updateSharedNote: (username: string, shareName: string, payload: Pick<Note, "title" | "content">) =>
+  updateSharedNote: (username: string, shareName: string, payload: NotePayload) =>
     request<Note>(`/${username}/${shareName}`, {
       method: "PUT",
       auth: true,

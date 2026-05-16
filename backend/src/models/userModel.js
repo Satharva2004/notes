@@ -10,6 +10,11 @@ const userSchema = new mongoose.Schema(
       trim: true,
       match: [/^[^\s@]+@[^\s@]+\.[^\s@]+$/, "Email is invalid"],
     },
+    clerkId: {
+      type: String,
+      unique: true,
+      sparse: true,
+    },
     name: {
       type: String,
       trim: true,
@@ -25,7 +30,6 @@ const userSchema = new mongoose.Schema(
     },
     password: {
       type: String,
-      required: [true, "Password is required"],
       minlength: [6, "Password must be at least 6 characters"],
     },
   },

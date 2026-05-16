@@ -243,7 +243,7 @@ export const getOpenApi = (_req, res) => {
           required: ["title", "content"],
           properties: {
             title: { type: "string", minLength: 1, maxLength: 120 },
-            content: { type: "string", maxLength: 10000 },
+            content: { type: "string", maxLength: 5000000 },
           },
         },
         SharePayload: {

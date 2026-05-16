@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ClipboardEvent } from "react";
 import { useTheme } from "next-themes";
 import { Link, useLocation, useNavigate, useParams } from "react-router-dom";
 import { Picker } from "emoji-mart-custom";
@@ -94,6 +94,56 @@ const FONTS = [
   { label: "Caveat", value: "'Caveat', cursive" },
 ];
 
+const DEFAULT_FONT = FONTS[0].value;
+const MAX_INLINE_IMAGE_CHARS = 2_500_000;
+
+const readFileAsDataUrl = (file: File) =>
+  new Promise<string>((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ""));
+    reader.onerror = () => reject(reader.error || new Error("Could not read image"));
+    reader.readAsDataURL(file);
+  });
+
+const loadImage = (src: string) =>
+  new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("Could not load image"));
+    image.src = src;
+  });
+
+const imageFileToDataUrl = async (file: File) => {
+  const sourceUrl = await readFileAsDataUrl(file);
+  const image = await loadImage(sourceUrl);
+  const maxSide = 1400;
+  const scale = Math.min(1, maxSide / Math.max(image.naturalWidth, image.naturalHeight));
+  const width = Math.max(1, Math.round(image.naturalWidth * scale));
+  const height = Math.max(1, Math.round(image.naturalHeight * scale));
+  const canvas = document.createElement("canvas");
+  canvas.width = width;
+  canvas.height = height;
+  const context = canvas.getContext("2d");
+
+  if (!context) return sourceUrl;
+
+  context.drawImage(image, 0, 0, width, height);
+  return canvas.toDataURL("image/jpeg", 0.86);
+};
+
+const normalizeStoredContent = (content: string) => {
+  if (!content.includes("emoji-mart-emoji") && !content.includes("apple-emoji")) return content;
+
+  const container = document.createElement("div");
+  container.innerHTML = content;
+
+  container.querySelectorAll(".apple-emoji, .emoji-mart-emoji").forEach((node) => {
+    node.replaceWith(node.textContent || "");
+  });
+
+  return container.innerHTML;
+};
+
 type LiveParticipant = {
   socketId: string;
   name: string;
@@ -115,7 +165,7 @@ export default function Notes() {
   const [title, setTitle] = useState("Untitled note");
   const [permission, setPermission] = useState<"viewer" | "editor">("editor");
   const [autoSave, setAutoSave] = useState(true);
-  const [fontFamily, setFontFamily] = useState(FONTS[0].value);
+  const [fontFamily, setFontFamily] = useState(DEFAULT_FONT);
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [displayName, setDisplayName] = useState(profile?.full_name ?? "");
@@ -130,6 +180,11 @@ export default function Notes() {
   const [liveShareName, setLiveShareName] = useState("");
   const [livePeople, setLivePeople] = useState<LiveParticipant[]>([]);
   const applyingRemoteChangeRef = useRef(false);
+
+  const [searchQuery, setSearchQuery] = useState("");
+  const [page, setPage] = useState(1);
+  const [hasMore, setHasMore] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
 
   const formatUpdatedAt = (date: string) =>
     new Intl.DateTimeFormat(undefined, {
@@ -220,7 +275,8 @@ export default function Notes() {
     setShareName(note.share_name || toShareName(note.title));
     setShareNameEdited(Boolean(note.share_name));
     setLiveShareName(note.share_name || "");
-    if (editorRef.current) editorRef.current.innerHTML = note.content;
+    setFontFamily(note.font_family || DEFAULT_FONT);
+    if (editorRef.current) editorRef.current.innerHTML = normalizeStoredContent(note.content);
   };
 
   useEffect(() => {
@@ -231,21 +287,49 @@ export default function Notes() {
   useEffect(() => {
     if (isSharedMode || !user) return;
 
-    const loadNotes = async () => {
-      setIsLoadingNotes(true);
+    const fetchNotes = async (isLoadMore = false) => {
+      if (isLoadMore) setIsLoadingMore(true);
+      else setIsLoadingNotes(true);
+
       try {
-        const fetchedNotes = await api.getNotes();
-        setNotes(fetchedNotes);
-        if (fetchedNotes[0]) setTimeout(() => loadNote(fetchedNotes[0]), 0);
+        const paginatedNotes = searchQuery 
+          ? await api.searchNotes(searchQuery, page) 
+          : await api.getNotes(page);
+          
+        if (isLoadMore) {
+          setNotes(prev => [...prev, ...paginatedNotes.notes]);
+        } else {
+          setNotes(paginatedNotes.notes);
+          if (paginatedNotes.notes[0] && !currentNoteId && !searchQuery) {
+            setTimeout(() => loadNote(paginatedNotes.notes[0]), 0);
+          }
+        }
+        setHasMore(paginatedNotes.page < paginatedNotes.pages);
       } catch (error: any) {
         toast.error("Could not load notes", { description: error.message });
       } finally {
         setIsLoadingNotes(false);
+        setIsLoadingMore(false);
       }
     };
 
-    loadNotes();
-  }, [isSharedMode, user]);
+    const debounce = setTimeout(() => {
+      fetchNotes(page > 1);
+    }, 300);
+
+    return () => clearTimeout(debounce);
+  }, [isSharedMode, user, searchQuery, page]);
+
+  const handleSearch = (e: React.ChangeEvent<HTMLInputElement>) => {
+    setSearchQuery(e.target.value);
+    setPage(1);
+  };
+
+  const loadMore = () => {
+    if (!isLoadingMore && hasMore) {
+      setPage(p => p + 1);
+    }
+  };
 
   useEffect(() => {
     if (!sharedRouteName) return;
@@ -261,8 +345,9 @@ export default function Notes() {
         setLiveShareName(sharedRouteName);
         setCurrentNoteId(note.id);
         setPermission(note.permission ?? "viewer");
+        setFontFamily(note.font_family || DEFAULT_FONT);
         setTimeout(() => {
-          if (editorRef.current) editorRef.current.innerHTML = note.content;
+          if (editorRef.current) editorRef.current.innerHTML = normalizeStoredContent(note.content);
         }, 0);
       } catch (error: any) {
         toast.error("Could not load shared note", { description: error.message });
@@ -279,6 +364,24 @@ export default function Notes() {
   const isViewOnlySharedNote = isSharedMode && permission !== "editor";
   const editedBy = sharedNote?.edited_by ?? [];
 
+  const emitLiveChange = (nextTitle = title, nextFontFamily = fontFamily) => {
+    if (!canEdit || applyingRemoteChangeRef.current || (!currentNoteId && !liveShareName)) return;
+
+    socket.emit("note:change", {
+      noteId: currentNoteId,
+      username: sharedRouteUsername || user?.username || sharedNote?.owner_username,
+      shareName: liveShareName,
+      title: nextTitle,
+      content: editorRef.current?.innerHTML ?? "",
+      fontFamily: nextFontFamily,
+      token: tokenStore.get(),
+    });
+  };
+
+  const emitLiveChangeAfterDomUpdate = (nextTitle = title, nextFontFamily = fontFamily) => {
+    window.requestAnimationFrame(() => emitLiveChange(nextTitle, nextFontFamily));
+  };
+
   useEffect(() => {
     const hasSocketTarget = Boolean(currentNoteId || liveShareName);
     if (!hasSocketTarget || (!sharedRouteUsername && isSharedMode)) return;
@@ -286,11 +389,12 @@ export default function Notes() {
     const roomUsername = sharedRouteUsername || user?.username || sharedNote?.owner_username;
     if (!currentNoteId && !roomUsername) return;
 
-    const handleRemoteChange = ({ title: nextTitle, content }: { title: string; content: string }) => {
+    const handleRemoteChange = ({ title: nextTitle, content, fontFamily: nextFontFamily }: { title: string; content: string; fontFamily?: string }) => {
       applyingRemoteChangeRef.current = true;
       setTitle(nextTitle);
+      if (nextFontFamily) setFontFamily(nextFontFamily);
       if (editorRef.current) {
-        editorRef.current.innerHTML = content;
+        editorRef.current.innerHTML = normalizeStoredContent(content);
       }
       window.setTimeout(() => {
         applyingRemoteChangeRef.current = false;
@@ -300,8 +404,9 @@ export default function Notes() {
     const handleRemoteSave = ({ note }: { note: Note }) => {
       setSharedNote(note);
       setTitle(note.title);
+      if (note.font_family) setFontFamily(note.font_family);
       if (editorRef.current && document.activeElement !== editorRef.current) {
-        editorRef.current.innerHTML = note.content;
+        editorRef.current.innerHTML = normalizeStoredContent(note.content);
       }
     };
 
@@ -356,6 +461,80 @@ export default function Notes() {
     restoreEditorSelection();
     document.execCommand(command, false, value);
     saveEditorSelection();
+    if (canEdit) {
+      setDraftVersion((version) => version + 1);
+      emitLiveChangeAfterDomUpdate();
+    }
+  };
+
+  const handleKeyDown = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Enter") {
+      const selection = window.getSelection();
+      if (!selection || selection.rangeCount === 0) return;
+      
+      let node: Node | null = selection.anchorNode;
+      let checkItem: HTMLElement | null = null;
+      
+      while (node && node !== editorRef.current) {
+        if (node.nodeType === Node.ELEMENT_NODE) {
+          const el = node as HTMLElement;
+          if (el.querySelector('input[type="checkbox"]')) {
+            checkItem = el;
+            break;
+          }
+        }
+        node = node.parentNode;
+      }
+      
+      if (checkItem) {
+        e.preventDefault();
+        
+        const textContent = checkItem.textContent?.trim();
+        if (!textContent || textContent === 'To-do item' || textContent === '\u200B') {
+          const p = document.createElement("p");
+          p.innerHTML = "<br>";
+          checkItem.replaceWith(p);
+          
+          const range = document.createRange();
+          range.setStart(p, 0);
+          range.collapse(true);
+          selection.removeAllRanges();
+          selection.addRange(range);
+          
+          saveEditorSelection();
+          if (canEdit) {
+            setDraftVersion(v => v + 1);
+            emitLiveChangeAfterDomUpdate();
+          }
+          return;
+        }
+
+        const newDiv = document.createElement("div");
+        newDiv.className = "flex items-start gap-2 my-1";
+        newDiv.innerHTML = `<input type="checkbox" class="mt-1.5 accent-primary" /><span>&#8203;</span>`;
+        
+        if (checkItem.nextSibling) {
+          checkItem.parentNode?.insertBefore(newDiv, checkItem.nextSibling);
+        } else {
+          checkItem.parentNode?.appendChild(newDiv);
+        }
+        
+        const newSpan = newDiv.querySelector("span");
+        if (newSpan) {
+          const range = document.createRange();
+          range.setStart(newSpan, 0);
+          range.collapse(true);
+          selection.removeAllRanges();
+          selection.addRange(range);
+        }
+        
+        saveEditorSelection();
+        if (canEdit) {
+          setDraftVersion(v => v + 1);
+          emitLiveChangeAfterDomUpdate();
+        }
+      }
+    }
   };
 
   const insertChecklist = () => {
@@ -364,29 +543,69 @@ export default function Notes() {
     const html = `<div class="flex items-start gap-2 my-1"><input type="checkbox" class="mt-1.5 accent-primary" /><span>To-do item</span></div>`;
     document.execCommand("insertHTML", false, html);
     saveEditorSelection();
+    if (canEdit) {
+      setDraftVersion((version) => version + 1);
+      emitLiveChangeAfterDomUpdate();
+    }
   };
 
-  const insertEmoji = (e: string) => {
+  const insertEmoji = (emojiText: string) => {
     const caretOffset = savedCaretOffsetRef.current;
     editorRef.current?.focus();
     restoreEditorSelection(true, caretOffset);
-    const selection = window.getSelection();
-    const range = selection?.rangeCount ? selection.getRangeAt(0) : null;
+    document.execCommand("insertText", false, emojiText);
 
-    if (range) {
-      range.deleteContents();
-      const emojiNode = document.createTextNode(e);
-      range.insertNode(emojiNode);
-      range.setStartAfter(emojiNode);
-      range.collapse(true);
-      selection?.removeAllRanges();
-      selection?.addRange(range);
-    } else {
-      document.execCommand("insertHTML", false, e);
+    saveEditorSelection();
+    if (canEdit) {
+      setDraftVersion((version) => version + 1);
+      emitLiveChangeAfterDomUpdate();
+    }
+  };
+
+  const insertImage = (src: string) => {
+    editorRef.current?.focus();
+    restoreEditorSelection(true);
+    document.execCommand(
+      "insertHTML",
+      false,
+      `<figure class="note-image-block"><img src="${src}" alt="Pasted image" /></figure><p><br /></p>`
+    );
+    saveEditorSelection();
+    setDraftVersion((version) => version + 1);
+    emitLiveChangeAfterDomUpdate();
+  };
+
+  const handlePaste = async (event: ClipboardEvent<HTMLDivElement>) => {
+    const imageFiles = Array.from(event.clipboardData.items)
+      .filter((item) => item.type.startsWith("image/"))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+
+    if (imageFiles.length === 0) return;
+
+    event.preventDefault();
+
+    if (!canEdit) {
+      toast.error("Sign in to edit this note");
+      return;
     }
 
     saveEditorSelection();
-    if (canEdit) setDraftVersion((version) => version + 1);
+
+    for (const file of imageFiles) {
+      try {
+        const dataUrl = await imageFileToDataUrl(file);
+        if (dataUrl.length > MAX_INLINE_IMAGE_CHARS) {
+          toast.error("Image is too large", {
+            description: "Try copying a smaller image or screenshot.",
+          });
+          continue;
+        }
+        insertImage(dataUrl);
+      } catch (error: any) {
+        toast.error("Could not paste image", { description: error.message });
+      }
+    }
   };
 
   const handleSave = async (options: { silent?: boolean } = {}) => {
@@ -406,22 +625,22 @@ export default function Notes() {
     try {
       const roomUsername = sharedRouteUsername || sharedNote?.owner_username || user?.username || "";
       const savedNote = isSharedMode && sharedRouteName
-        ? await api.updateSharedNote(roomUsername, sharedRouteName, { title: title.trim(), content })
+        ? await api.updateSharedNote(roomUsername, sharedRouteName, { title: title.trim(), content, font_family: fontFamily })
         : currentNoteId
-          ? await api.updateNote(currentNoteId, { title: title.trim(), content })
-          : await api.createNote({ title: title.trim(), content });
+          ? await api.updateNote(currentNoteId, { title: title.trim(), content, font_family: fontFamily })
+          : await api.createNote({ title: title.trim(), content, font_family: fontFamily });
 
       setCurrentNoteId(savedNote.id);
       if (savedNote.share_name) setLiveShareName(savedNote.share_name);
       if (isSharedMode) {
         setSharedNote(savedNote);
         if (liveShareName) {
-          socket.emit("note:saved", { noteId: savedNote.id, username: roomUsername, shareName: liveShareName, note: savedNote, token: tokenStore.get() });
+          socket.emit("note:saved", { noteId: savedNote.id, username: roomUsername, shareName: liveShareName, note: { ...savedNote, font_family: fontFamily }, token: tokenStore.get() });
         }
       } else {
         setNotes((existingNotes) => [savedNote, ...existingNotes.filter((note) => note.id !== savedNote.id)]);
         if ((savedNote.id || liveShareName) && user?.username) {
-          socket.emit("note:saved", { noteId: savedNote.id, username: user.username, shareName: liveShareName, note: savedNote, token: tokenStore.get() });
+          socket.emit("note:saved", { noteId: savedNote.id, username: user.username, shareName: liveShareName, note: { ...savedNote, font_family: fontFamily }, token: tokenStore.get() });
         }
       }
       setSavedAt("just now");
@@ -482,6 +701,7 @@ export default function Notes() {
     setShareName("");
     setShareNameEdited(false);
     setLiveShareName("");
+    setFontFamily(DEFAULT_FONT);
     if (editorRef.current) editorRef.current.innerHTML = "";
     editorRef.current?.focus();
   };
@@ -500,9 +720,9 @@ export default function Notes() {
         <div className="flex h-14 items-center gap-2 px-4 md:px-6">
           <div className="flex items-center gap-2 mr-2">
             <div className="h-8 w-8 grid place-items-center rounded-md bg-primary/10 text-primary">
-              <StickyNote className="h-4 w-4" />
+              <img src="/logo.jpg" alt="" />
             </div>
-            <span className="font-semibold tracking-tight hidden sm:inline">Notes</span>
+            <span className="font-semibold tracking-tight hidden sm:inline">DumpNotes</span>
           </div>
 
           <Separator orientation="vertical" className="h-6 mx-1 hidden sm:block" />
@@ -511,16 +731,7 @@ export default function Notes() {
             value={title}
             onChange={(e) => {
               setTitle(e.target.value);
-              if ((currentNoteId || liveShareName) && canEdit && !applyingRemoteChangeRef.current) {
-                socket.emit("note:change", {
-                  noteId: currentNoteId,
-                  username: sharedRouteUsername || user?.username || sharedNote?.owner_username,
-                  shareName: liveShareName,
-                  title: e.target.value,
-                  content: editorRef.current?.innerHTML ?? "",
-                  token: tokenStore.get(),
-                });
-              }
+              emitLiveChange(e.target.value);
               if (canEdit) setDraftVersion((version) => version + 1);
               if (!shareNameEdited) {
                 setShareName(toShareName(e.target.value));
@@ -584,8 +795,18 @@ export default function Notes() {
                   <SheetTitle>History</SheetTitle>
                   <SheetDescription>Your recently saved notes.</SheetDescription>
                 </SheetHeader>
-                <ScrollArea className="h-[calc(100vh-7rem)] mt-4 -mx-2 pr-2">
-                  <div className="flex flex-col gap-1 px-2">
+                {!isSharedMode && (
+                  <div className="mt-4 px-2">
+                    <Input
+                      placeholder="Search notes..."
+                      value={searchQuery}
+                      onChange={handleSearch}
+                      className="w-full"
+                    />
+                  </div>
+                )}
+                <ScrollArea className="h-[calc(100vh-10rem)] mt-2 -mx-2 pr-2">
+                  <div className="flex flex-col gap-1 px-2 pb-4">
                     {isSharedMode && editedBy.length > 0 && (
                       <div className="px-3 py-2">
                         <p className="text-xs font-medium text-foreground">People with activity</p>
@@ -609,11 +830,11 @@ export default function Notes() {
                         </div>
                       </div>
                     )}
-                    {!isSharedMode && isLoadingNotes && (
+                    {!isSharedMode && isLoadingNotes && notes.length === 0 && (
                       <p className="px-3 py-2 text-sm text-muted-foreground">Loading notes...</p>
                     )}
                     {!isSharedMode && !isLoadingNotes && notes.length === 0 && (
-                      <p className="px-3 py-2 text-sm text-muted-foreground">No saved notes yet.</p>
+                      <p className="px-3 py-2 text-sm text-muted-foreground">No notes found.</p>
                     )}
                     {!isSharedMode && notes.map((n) => (
                       <button
@@ -628,6 +849,16 @@ export default function Notes() {
                         <p className="text-xs text-muted-foreground mt-1 line-clamp-2">{notePreview(n.content)}</p>
                       </button>
                     ))}
+                    {!isSharedMode && hasMore && (
+                      <Button
+                        variant="outline"
+                        className="mt-4 w-full"
+                        onClick={loadMore}
+                        disabled={isLoadingMore}
+                      >
+                        {isLoadingMore ? "Loading..." : "Load More"}
+                      </Button>
+                    )}
                   </div>
                 </ScrollArea>
               </SheetContent>
@@ -791,7 +1022,11 @@ export default function Notes() {
                 {FONTS.map((f) => (
                   <button
                     key={f.value}
-                    onClick={() => setFontFamily(f.value)}
+                    onClick={() => {
+                      setFontFamily(f.value);
+                      emitLiveChange(title, f.value);
+                      if (canEdit) setDraftVersion((version) => version + 1);
+                    }}
                     style={{ fontFamily: f.value }}
                     className="w-full flex items-center justify-between gap-2 rounded-md px-2.5 py-2 text-sm hover:bg-accent text-left"
                   >
@@ -826,25 +1061,17 @@ export default function Notes() {
             onMouseUp={saveEditorSelection}
             onKeyUp={saveEditorSelection}
             onBlur={saveEditorSelection}
+            onPaste={handlePaste} onKeyDown={handleKeyDown}
             onInput={() => {
               if (!canEdit) return;
               saveEditorSelection();
               window.requestAnimationFrame(saveEditorSelection);
-              if ((currentNoteId || liveShareName) && !applyingRemoteChangeRef.current) {
-                socket.emit("note:change", {
-                  noteId: currentNoteId,
-                  username: sharedRouteUsername || user?.username || sharedNote?.owner_username,
-                  shareName: liveShareName,
-                  title,
-                  content: editorRef.current?.innerHTML ?? "",
-                  token: tokenStore.get(),
-                });
-              }
+              emitLiveChange();
               if (!autoSave) return;
               setDraftVersion((version) => version + 1);
               setSavedAt("just now");
             }}
-            className="notes-editor min-h-[60vh] outline-none text-base leading-relaxed focus:outline-none"
+            className="notes-editor min-h-[60vh] outline-none text-base leading-relaxed focus:outline-none cursor-text caret-foreground"
           />
         </div>
       </main>

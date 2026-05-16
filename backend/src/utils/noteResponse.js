@@ -17,6 +17,7 @@ export const toNoteResponse = (note, owner) => ({
   id: note._id.toString(),
   title: note.title,
   content: note.content,
+  font_family: note.fontFamily,
   created_at: note.createdAt,
   updated_at: note.updatedAt,
   share_name: note.shareName,

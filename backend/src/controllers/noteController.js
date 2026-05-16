@@ -36,11 +36,61 @@ const ensureUsername = async (user) => {
 
 export const getNotes = async (req, res, next) => {
   try {
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 50;
+    const skip = (page - 1) * limit;
+
     const notes = await Note.find({
       owner: req.user._id,
-    }).sort({ updatedAt: -1 });
+    })
+      .sort({ updatedAt: -1 })
+      .skip(skip)
+      .limit(limit);
 
-    res.status(200).json(notes.map((note) => toNoteResponse(note, req.user)));
+    const total = await Note.countDocuments({ owner: req.user._id });
+
+    res.status(200).json({
+      notes: notes.map((note) => toNoteResponse(note, req.user)),
+      page,
+      limit,
+      total,
+      pages: Math.ceil(total / limit),
+    });
+  } catch (error) {
+    next(error);
+  }
+};
+
+export const searchNotes = async (req, res, next) => {
+  try {
+    const keyword = req.query.q;
+    const page = parseInt(req.query.page, 10) || 1;
+    const limit = parseInt(req.query.limit, 10) || 50;
+    const skip = (page - 1) * limit;
+
+    if (!keyword) {
+      return res.status(400).json({ message: "Search keyword is required" });
+    }
+
+    const query = {
+      owner: req.user._id,
+      $text: { $search: keyword }
+    };
+
+    const notes = await Note.find(query)
+      .sort({ score: { $meta: "textScore" } })
+      .skip(skip)
+      .limit(limit);
+
+    const total = await Note.countDocuments(query);
+
+    res.status(200).json({
+      notes: notes.map((note) => toNoteResponse(note, req.user)),
+      page,
+      limit,
+      total,
+      pages: Math.ceil(total / limit),
+    });
   } catch (error) {
     next(error);
   }
@@ -65,6 +115,7 @@ export const createNote = async (req, res, next) => {
     const note = await Note.create({
       title: req.body.title,
       content: req.body.content,
+      fontFamily: req.body.font_family,
       owner: req.user._id,
     });
 
@@ -84,6 +135,7 @@ export const updateNote = async (req, res, next) => {
 
     note.title = req.body.title;
     note.content = req.body.content;
+    if (req.body.font_family !== undefined) note.fontFamily = req.body.font_family;
 
     const existingEditor = note.editHistory.find((entry) => entry.email === req.user.email);
     if (existingEditor) {
@@ -182,6 +234,7 @@ export const updateSharedNoteByName = async (req, res, next) => {
 
     note.title = req.body.title;
     note.content = req.body.content;
+    if (req.body.font_family !== undefined) note.fontFamily = req.body.font_family;
     const existingEditor = note.editHistory.find((entry) => entry.email === req.user.email);
     if (existingEditor) {
       existingEditor.name = req.user.name || req.user.email;
