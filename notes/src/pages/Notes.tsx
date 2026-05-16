@@ -94,6 +94,12 @@ const FONTS = [
   { label: "Caveat", value: "'Caveat', cursive" },
 ];
 
+type LiveParticipant = {
+  socketId: string;
+  name: string;
+  email: string;
+};
+
 export default function Notes() {
   const { shareName: sharedRouteName } = useParams();
   const { username: sharedRouteUsername } = useParams();
@@ -122,6 +128,7 @@ export default function Notes() {
   const [shareNameEdited, setShareNameEdited] = useState(false);
   const [draftVersion, setDraftVersion] = useState(0);
   const [liveShareName, setLiveShareName] = useState("");
+  const [livePeople, setLivePeople] = useState<LiveParticipant[]>([]);
   const applyingRemoteChangeRef = useRef(false);
 
   const formatUpdatedAt = (date: string) =>
@@ -200,6 +207,12 @@ export default function Notes() {
       .join("")
       .toUpperCase()
       .slice(0, 2);
+
+  const participantColor = (value: string) => {
+    const colors = ["bg-violet-500", "bg-rose-500", "bg-amber-500", "bg-sky-500", "bg-emerald-500", "bg-pink-500", "bg-indigo-500", "bg-teal-500"];
+    const seed = value || "guest";
+    return colors[seed.charCodeAt(0) % colors.length];
+  };
 
   const loadNote = (note: Note) => {
     setCurrentNoteId(note.id);
@@ -292,10 +305,23 @@ export default function Notes() {
       }
     };
 
+    const handlePresence = ({ participants }: { participants: LiveParticipant[] }) => {
+      setLivePeople(participants);
+    };
+
     const joinRoom = () => {
-      socket.emit("note:join", { noteId: currentNoteId, username: roomUsername, shareName: liveShareName });
+      socket.emit("note:join", {
+        noteId: currentNoteId,
+        username: roomUsername,
+        shareName: liveShareName,
+        participant: {
+          name: profile?.full_name || user?.email?.split("@")[0] || "Guest",
+          email: user?.email || "",
+        },
+      });
       socket.on("note:changed", handleRemoteChange);
       socket.on("note:saved", handleRemoteSave);
+      socket.on("note:presence", handlePresence);
     };
 
     if (socket.connected) {
@@ -309,9 +335,11 @@ export default function Notes() {
       socket.emit("note:leave", { noteId: currentNoteId, username: roomUsername, shareName: liveShareName });
       socket.off("note:changed", handleRemoteChange);
       socket.off("note:saved", handleRemoteSave);
+      socket.off("note:presence", handlePresence);
       socket.off("connect", joinRoom);
+      setLivePeople([]);
     };
-  }, [currentNoteId, isSharedMode, liveShareName, sharedRouteUsername, sharedNote?.owner_username, user?.username]);
+  }, [currentNoteId, isSharedMode, liveShareName, profile?.full_name, sharedRouteUsername, sharedNote?.owner_username, user?.email, user?.username]);
 
   useEffect(() => {
     if (!autoSave || !canEdit || draftVersion === 0 || isSaving) return;
@@ -503,43 +531,40 @@ export default function Notes() {
             placeholder="Untitled note"
           />
 
-          {isSharedMode && editedBy.length > 0 && (
-            <div className="hidden lg:flex items-center gap-2">
-              <span className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
-                <span className="relative flex h-2 w-2">
-                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75" />
-                  <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-                </span>
-                Live
-              </span>
-              <div className="flex -space-x-2">
-                {editedBy.slice(0, 5).map((entry) => {
-                  const AVATAR_COLORS = ["bg-violet-500","bg-rose-500","bg-amber-500","bg-sky-500","bg-emerald-500","bg-pink-500","bg-indigo-500","bg-teal-500"];
-                  const avatarColor = AVATAR_COLORS[entry.email.charCodeAt(0) % AVATAR_COLORS.length];
-                  return (
-                    <Tooltip key={entry.email}>
-                      <TooltipTrigger asChild>
-                        <span className={`grid h-7 w-7 place-items-center rounded-full ring-2 ring-background ${avatarColor} text-[10px] font-semibold text-white cursor-default select-none`}>
-                          {editorInitials(entry.name, entry.email)}
-                        </span>
-                      </TooltipTrigger>
-                      <TooltipContent side="bottom" className="flex flex-col gap-0.5">
-                        <p className="font-medium">{entry.name || entry.email}</p>
-                        {entry.name && <p className="text-xs text-muted-foreground">{entry.email}</p>}
-                      </TooltipContent>
-                    </Tooltip>
-                  );
-                })}
-                {editedBy.length > 5 && (
-                  <span className="grid h-7 w-7 place-items-center rounded-full ring-2 ring-background bg-muted text-[10px] font-semibold text-muted-foreground">
-                    +{editedBy.length - 5}
-                  </span>
-                )}
-              </div>
-            </div>
-          )}
-
           <div className="ml-auto flex items-center gap-1.5">
+            {livePeople.length > 0 && (
+              <div className="hidden lg:flex h-9 items-center gap-2 rounded-md bg-muted/60 px-2.5">
+                <span className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+                  <span className="h-2 w-2 rounded-full bg-emerald-500 shadow-[0_0_0_3px_hsl(142_70%_40%/0.16)]" />
+                  {livePeople.length} online
+                </span>
+                <div className="flex -space-x-1.5">
+                  {livePeople.slice(0, 3).map((person) => {
+                    const isSelf = person.socketId === socket.id;
+                    return (
+                      <Tooltip key={person.socketId}>
+                        <TooltipTrigger asChild>
+                          <span className={`relative grid h-6 w-6 place-items-center rounded-full ring-2 ring-background ${participantColor(person.email || person.name)} text-[9px] font-semibold text-white cursor-default select-none`}>
+                            {editorInitials(person.name, person.email)}
+                            <span className="absolute -bottom-0.5 -right-0.5 h-2 w-2 rounded-full border border-background bg-emerald-500" />
+                          </span>
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom" className="flex flex-col gap-0.5">
+                          <p className="font-medium">{isSelf ? "You" : person.name || person.email || "Guest"}</p>
+                          {person.email && <p className="text-xs text-muted-foreground">{person.email}</p>}
+                        </TooltipContent>
+                      </Tooltip>
+                    );
+                  })}
+                  {livePeople.length > 3 && (
+                    <span className="grid h-6 w-6 place-items-center rounded-full ring-2 ring-background bg-background text-[9px] font-semibold text-muted-foreground">
+                      +{livePeople.length - 3}
+                    </span>
+                  )}
+                </div>
+              </div>
+            )}
+
             {(!isSharedMode || user) && (
               <Button variant="ghost" size="sm" onClick={isSharedMode ? () => navigate("/notes") : handleNew}>
                 <Plus className="h-4 w-4 sm:mr-1.5" />
