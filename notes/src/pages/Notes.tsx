@@ -75,6 +75,8 @@ import {
   Moon,
   LogOut,
   UserCog,
+  Github,
+  Linkedin,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuth } from "@/contexts/AuthContext";
@@ -292,10 +294,10 @@ export default function Notes() {
       else setIsLoadingNotes(true);
 
       try {
-        const paginatedNotes = searchQuery 
-          ? await api.searchNotes(searchQuery, page) 
+        const paginatedNotes = searchQuery
+          ? await api.searchNotes(searchQuery, page)
           : await api.getNotes(page);
-          
+
         if (isLoadMore) {
           setNotes(prev => [...prev, ...paginatedNotes.notes]);
         } else {
@@ -471,10 +473,10 @@ export default function Notes() {
     if (e.key === "Enter") {
       const selection = window.getSelection();
       if (!selection || selection.rangeCount === 0) return;
-      
+
       let node: Node | null = selection.anchorNode;
       let checkItem: HTMLElement | null = null;
-      
+
       while (node && node !== editorRef.current) {
         if (node.nodeType === Node.ELEMENT_NODE) {
           const el = node as HTMLElement;
@@ -485,22 +487,22 @@ export default function Notes() {
         }
         node = node.parentNode;
       }
-      
+
       if (checkItem) {
         e.preventDefault();
-        
+
         const textContent = checkItem.textContent?.trim();
         if (!textContent || textContent === 'To-do item' || textContent === '\u200B') {
           const p = document.createElement("p");
           p.innerHTML = "<br>";
           checkItem.replaceWith(p);
-          
+
           const range = document.createRange();
           range.setStart(p, 0);
           range.collapse(true);
           selection.removeAllRanges();
           selection.addRange(range);
-          
+
           saveEditorSelection();
           if (canEdit) {
             setDraftVersion(v => v + 1);
@@ -512,13 +514,13 @@ export default function Notes() {
         const newDiv = document.createElement("div");
         newDiv.className = "flex items-start gap-2 my-1";
         newDiv.innerHTML = `<input type="checkbox" class="mt-1.5 accent-primary" /><span>&#8203;</span>`;
-        
+
         if (checkItem.nextSibling) {
           checkItem.parentNode?.insertBefore(newDiv, checkItem.nextSibling);
         } else {
           checkItem.parentNode?.appendChild(newDiv);
         }
-        
+
         const newSpan = newDiv.querySelector("span");
         if (newSpan) {
           const range = document.createRange();
@@ -527,7 +529,7 @@ export default function Notes() {
           selection.removeAllRanges();
           selection.addRange(range);
         }
-        
+
         saveEditorSelection();
         if (canEdit) {
           setDraftVersion(v => v + 1);
@@ -719,9 +721,7 @@ export default function Notes() {
       <header className="sticky top-0 z-30 border-b border-border bg-background/80 backdrop-blur">
         <div className="flex h-14 items-center gap-2 px-4 md:px-6">
           <div className="flex items-center gap-2 mr-2">
-            <div className="h-8 w-8 grid place-items-center rounded-md bg-primary/10 text-primary">
-              <img src="/logo.jpg" alt="" />
-            </div>
+            <img src="/logo.jpg" alt="logo" className="h-8 w-8 grid place-items-center rounded-md bg-primary/10 text-primary" />
             <span className="font-semibold tracking-tight hidden sm:inline">DumpNotes</span>
           </div>
 
@@ -1099,6 +1099,28 @@ export default function Notes() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* Bottom Right Social Links */}
+      <div className="fixed bottom-4 right-4 z-50 flex items-center gap-2">
+        <a 
+          href="https://github.com/Satharva2004/notes" 
+          target="_blank" 
+          rel="noreferrer" 
+          className="h-9 w-9 flex items-center justify-center rounded-full bg-background border border-border shadow-sm text-muted-foreground hover:text-foreground hover:border-primary/50 transition-all hover:scale-110 active:scale-95"
+          title="GitHub Repository"
+        >
+          <Github className="h-4 w-4" />
+        </a>
+        <a 
+          href="https://www.linkedin.com/in/atharvasawant0804/" 
+          target="_blank" 
+          rel="noreferrer" 
+          className="h-9 w-9 flex items-center justify-center rounded-full bg-background border border-border shadow-sm text-muted-foreground hover:text-foreground hover:border-primary/50 transition-all hover:scale-110 active:scale-95"
+          title="LinkedIn Profile"
+        >
+          <Linkedin className="h-4 w-4" />
+        </a>
+      </div>
     </div>
   );
 }

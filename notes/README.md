@@ -1,4 +1,4 @@
-# Triage
+# DumpNotes
 
 Frontend application for tracking, prioritizing, and resolving bugs.
 
